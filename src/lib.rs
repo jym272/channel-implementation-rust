@@ -8,52 +8,114 @@ use std::collections::VecDeque;
 // Mutex -> thread safe locking
 use std::sync::{Arc, Condvar, Mutex};
 
+
 struct Inner<T> {
+    queue: VecDeque<T>,
+    senders: usize,
+}
+
+struct Shared<T> {
     //Mutex for the sender and the receiver because they are accessing the same data
     //with mutex assures that only one Sender or the Receiver can access the data at a time
-    queue: Mutex<VecDeque<T>>,
+    inner: Mutex<Inner<T>>,
     available: Condvar,
 }
+
 struct Sender<T> {
     //Arc because we want to share the queue between multiple threads,
     //otherwise the sender and the receiver would have two instances of the queue,
     //They need to share the same queue because the sender and the receiver need to be able to send and receive messages
-    inner: Arc<Inner<T>>,
+    shared: Arc<Shared<T>>,
+}
+
+impl<T> Clone for Sender<T> {
+    fn clone(&self) -> Self {
+        let mut inner = self.shared.inner.lock().unwrap();
+        inner.senders += 1;
+        drop(inner);
+        Sender {
+            shared: Arc::clone(&self.shared), //cloning the arc and not the thing inside the arc
+        }
+    }
+}
+
+impl<T> Drop for Sender<T>{
+    fn drop(&mut self) {
+        let mut inner = self.shared.inner.lock().unwrap();
+        // eprintln!("Sender dropped, count was {}", inner.senders);
+        inner.senders -= 1;
+        if inner.senders == 0 {
+            //only the receiver waiting, at most one thread can be waiting
+            self.shared.available.notify_one(); //notify all?
+        }
+        drop(inner);
+    }
 }
 struct Receiver<T> {
-    inner: Arc<Inner<T>>,
+    shared: Arc<Shared<T>>,
 }
+
 fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let inner = Arc::new(Inner {
-        queue: Mutex::default(), //default is empty vector
+    let shared = Arc::new(Shared {
+        inner: Mutex::new(Inner {
+            queue: VecDeque::new(),
+            senders: 1,
+        }),
+        available: Condvar::new(),
     });
     (
         Sender {
-            inner: inner.clone(),
+            shared: shared.clone(),
+
         },
-        Receiver { inner },
+        Receiver { shared },
     )
 }
+
 impl<T> Sender<T> {
     fn send(&self, t: T) {
-        let mut queue = self.inner.queue.lock().unwrap();
-        queue.push_back(t);
-        drop(queue); //drop the lock
-        self.inner.available.notify_one(); //wake up the receiver
+        let mut inner = self.shared.inner.lock().unwrap();
+        inner.queue.push_back(t);
+        drop(inner); //drop the lock
+        self.shared.available.notify_one(); //wake up the receiver(the thread in the condvar - a receiver) and immediately take the lock and try to receive the message
     }
 }
+
 impl<T> Receiver<T> {
-    fn recv(&self) -> T {
-        let mut queue = self.inner.queue.lock().unwrap();
+    fn recv(&self) -> Option<T> {
+        let mut inner = self.shared.inner.lock().unwrap();
         loop {
-            match queue.pop_front() {
-                Some(t) => return t,
-                None => {
+            match inner.queue.pop_front() {
+                Some(t) => return Some(t), //With 'wait' if I'm awake, I take the mutex and check if there is a message, if there is a msg return it, if not I release the mutex and wait again
+                None if inner.senders==0   => return None, //if there is no message and there are no senders, return None
+                None => { //Block & wait
                     //you can't wait while still holding the mutex lock.
                     //unwrap -> give up the mutex in order to wait
-                    queue = self.inner.available.wait(queue).unwrap();
+                    inner = self.shared.available.wait(inner).unwrap(); //just before sleep give away the lock/consume the mutex
                 }
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn ping_pong() {
+        let (tx, rx) = channel();
+        tx.send(1);
+        assert_eq!(rx.recv(), Some(1));
+    }
+
+    #[test]
+    fn closed() {
+        let (tx, rx) = channel::<()>();
+        // let _ = tx; //this does not drop the sender
+        drop(tx);
+        // eprintln!("{:?}", "closed test");
+        assert_eq!(rx.recv(), None);
+        // let _ = rx.recv(); //drop the receiver, but there's no futures senders
     }
 }
