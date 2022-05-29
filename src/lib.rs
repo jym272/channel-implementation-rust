@@ -1,3 +1,10 @@
+// Mpsc -> Multi Producer Single Consumer
+// https://doc.rust-lang.org/std/sync/mpsc/
+
+// Some falvor implementation of mpsc, Crossbeam and Flume
+// https://github.com/crossbeam-rs/crossbeam-channel/tree/master/src/flavors
+// https://github.com/zesterer/flume
+
 use std::collections::VecDeque;
 //Basic Concepts for implementing a channel in Rust
 // Mutex: https://doc.rust-lang.org/std/sync/struct.Mutex.html
@@ -7,6 +14,21 @@ use std::collections::VecDeque;
 // Arc -> thread safe reference counting
 // Mutex -> thread safe locking
 use std::sync::{Arc, Condvar, Mutex};
+
+// Flavors:
+// 1. Synchronous channels: channel where send() can block, Limited capacity.
+        // -> Mutex + Condvar:VecDeque(ring buffer)
+        // -> without a Mutex, we can use a atomic queue -> head and tail pointers // wake ups: thread::park + thread::Thread::notify
+// 2. Asynchronous channels: channel where send() cannot block, Unbounded.
+        // -> Mutex + Condvar:VecDeque
+        // -> Mutex + Condvar: LinkedList -> no resizing
+        // -> AtomicLinkedList -> linked list of T / Atomic Queue
+        // -> Atomic block linked list -> linked list of atomic VecDeque<T>
+// 3. Rendezvous channels: Synchronous with capacity 0. Used for thread synchronization.
+// 4. Oneshot channels: Any capacity, used for one-time communication. Only one call to send().
+
+// async/await
+//send with the channel is full, not blocking, yield to the future
 
 
 struct Inner<T> {
